@@ -99,17 +99,21 @@ var player = document.querySelector("#player");
 var preview = document.querySelector("#preview");
 var originalImage = document.querySelector("#originalImage");
 
-originalImage.onload = function () {
+originalImage.onload = function() {
   resetAll();
+  // clear the input if user upload/paste image
+  if (/^blob:/.test(originalImage.src)) {
+    document.querySelector("#imageURL").value = "";
+  }
+  updateURLParam();
   prepareSearchImage();
 };
 
-var sourceImage = new Image();
-sourceImage.onload = function () {
-  resetAll();
-  prepareSearchImage();
-};
-sourceImage.src = originalImage.src;
+window.addEventListener("load", (event) => {
+  if(originalImage.dataset.url) {
+    originalImage.src = originalImage.dataset.url;
+  }
+});
 
 player.volume = 0.5;
 
@@ -151,9 +155,13 @@ var search = function (t, prev_result) {
   }
   document.querySelector("#flipBtn").disabled = true;
   document.querySelector("#imageURL").disabled = true;
+  var endpoint = "/search";
+  if (document.querySelector("#jcBtn .glyphicon").classList.contains("glyphicon-check")) {
+    endpoint = "/search?method=jc";
+  }
 
   var xhr = new XMLHttpRequest();
-  xhr.open("POST", "/search", true);
+  xhr.open("POST", endpoint, true);
   xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
   xhr.onreadystatechange = function () {
     document.querySelector("#searchBtn span").classList.remove("glyphicon-refresh");
@@ -230,9 +238,9 @@ var search = function (t, prev_result) {
             var thumbnailImage = (trial >= 2 || parseFloat(data.docs[0].diff) < 10) && index < 5 ? "<div class=\"thumb\" style=\"min-height:166px\"><img src=\"" + thumbnailLink + "\"></div>" : "";
 
             if (formatTime(entry.from) === formatTime(entry.to)) {
-              result.innerHTML = "<a href=\"#\"><div><div class=\"text\"><span class=\"title\">" + title_display + "</span><br><span class=\"ep\">EP#" + zeroPad(entry.episode, 2) + "</span> <span class=\"time\">" + formatTime(entry.from) + "</span> <span class=\"similarity\">~" + similarity + "%</span><br><span class=\"file\">" + entry.file + "</span></div>" + thumbnailImage + "</div></a>";
+              result.innerHTML = "<div><div class=\"text\"><span class=\"title\">" + title_display + "</span><br><span class=\"ep\">EP#" + zeroPad(entry.episode, 2) + "</span> <span class=\"time\">" + formatTime(entry.from) + "</span> <span class=\"similarity\">~" + similarity + "%</span><br><span class=\"file\">" + entry.file + "</span></div>" + thumbnailImage + "</div>";
             } else {
-              result.innerHTML = "<a href=\"#\"><div><div class=\"text\"><span class=\"title\">" + title_display + "</span><br><span class=\"ep\">EP#" + zeroPad(entry.episode, 2) + "</span> <span class=\"time\">" + formatTime(entry.from) + "-" + formatTime(entry.to) + "</span> <span class=\"similarity\">~" + similarity + "%</span><br><span class=\"file\">" + entry.file + "</span></div>" + thumbnailImage + "</div></a>";
+              result.innerHTML = "<div><div class=\"text\"><span class=\"title\">" + title_display + "</span><br><span class=\"ep\">EP#" + zeroPad(entry.episode, 2) + "</span> <span class=\"time\">" + formatTime(entry.from) + "-" + formatTime(entry.to) + "</span> <span class=\"similarity\">~" + similarity + "%</span><br><span class=\"file\">" + entry.file + "</span></div>" + thumbnailImage + "</div>";
             }
             document.querySelector("#results").appendChild(result);
           }
@@ -246,7 +254,9 @@ var search = function (t, prev_result) {
         keepSearchDiv.style.textAlign = "center";
         keepSearchDiv.innerHTML = "<button id=\"search2Btn\" type=\"button\" class=\"btn btn-default btn-sm btn-primary\"><span class=\"glyphicon glyphicon-search\"></span> Keep Searching</button>";
 
-        if (parseFloat(data.docs[0].diff) > 10) {
+        var threshold = document.querySelector("#jcBtn .glyphicon").classList.contains("glyphicon-check") ? 3 : 8;
+
+        if (parseFloat(data.docs[0].diff) > threshold) { // target 97% for JCD, 92% for ColorLayout
           if (trial < 2) {
             search(trial + 1, data);
           } else if (trial < 5) {
@@ -254,6 +264,9 @@ var search = function (t, prev_result) {
             document.querySelector("#search2Btn").addEventListener("click", function () {
               search(trial + 1, data);
             });
+            if (document.querySelector("#safeBtn .glyphicon").classList.contains("glyphicon-check") === false) {
+              document.querySelectorAll(".result")[0].click();
+            }
           }
         } else {
           if (trial < 5) {
@@ -310,7 +323,7 @@ document.querySelector("#imageURL").addEventListener("input", function () {
     if (document.querySelector("form").checkValidity()) {
       fetchImageDelay = setTimeout(function () {
         document.querySelector("#messageText").innerHTML = "<span class=\"glyphicon glyphicon-repeat spinning\"></span>";
-        sourceImage.src = "/image-proxy?url=" + encodeURIComponent(document.querySelector("#imageURL").value.replace(/ /g, "%20"));
+        originalImage.src = "https://trace-moe-image-proxy.now.sh/api/image-proxy?url=" + encodeURIComponent(document.querySelector("#imageURL").value.replace(/ /g, "%20"));
         history.replaceState(null, null, "/?url=" + encodeURIComponent(document.querySelector("#imageURL").value.replace(/ /g, "%20")));
       }, 500);
     } else {
@@ -323,6 +336,11 @@ document.querySelector("#imageURL").addEventListener("input", function () {
 document.querySelector("#safeBtn").addEventListener("click", function () {
   document.querySelector("#safeBtn .glyphicon").classList.toggle("glyphicon-unchecked");
   document.querySelector("#safeBtn .glyphicon").classList.toggle("glyphicon-check");
+});
+
+document.querySelector("#jcBtn").addEventListener("click", function () {
+  document.querySelector("#jcBtn .glyphicon").classList.toggle("glyphicon-unchecked");
+  document.querySelector("#jcBtn .glyphicon").classList.toggle("glyphicon-check");
 });
 
 var drawVideoPreview = function () {
@@ -459,18 +477,13 @@ var resetAll = function () {
   window.cancelAnimationFrame(preview_heartbeat);
 };
 
-sourceImage.onerror = function () {
-  document.querySelector("#messageText").classList.add("error");
-  document.querySelector("#messageText").innerText = "";
-};
-
 originalImage.onerror = function () {
   document.querySelector("#messageText").classList.add("error");
   document.querySelector("#messageText").innerText = "";
 };
 
 var prepareSearchImage = function () {
-  var img = originalImage.src === document.location.href ? sourceImage : originalImage;
+  var img = originalImage
   var imageAspectRatio = img.width / img.height;
 
   searchImage.width = 640;
@@ -529,14 +542,8 @@ var handleFileSelect = function (evt) {
   if (file) {
     document.querySelector("#results").innerHTML = "<div id=\"status\">Reading File...</div>";
     if (file.type.match("image.*")) {
-      var reader = new FileReader();
-
-      reader.onload = (function () {
-        return function (e) {
-          sourceImage.src = e.target.result;
-        };
-      }(file));
-      reader.readAsDataURL(file);
+      URL.revokeObjectURL(originalImage.src);
+      originalImage.src = URL.createObjectURL(file);
     } else {
       document.querySelector("#results").innerHTML = "<div id=\"status\">Error: File is not an image</div>";
       return false;
@@ -626,7 +633,7 @@ function CLIPBOARD_CLASS (canvas_id) {
     pastedImage.onload = function () {
       ctx.drawImage(pastedImage, 0, 0);
     };
-    sourceImage.src = source;
+    originalImage.src = source;
   };
 }
 

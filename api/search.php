@@ -117,10 +117,10 @@ if (!$image && !$_GET['url'] && !isset($_FILES['image'])) {
     $savePath = '../temp/';
     $filename = microtime(true).'.jpg';
 
-    if ($_GET['url']) {
+    if (isset($_GET['url']) && $_GET['url']) {
         try {
             $imageURL = str_replace(' ','%20',rawurldecode($_GET["url"]));
-            $proxyImageURL = "https://trace.moe/image-proxy?url=".str_replace(' ','%20',rawurlencode($imageURL));
+            $proxyImageURL = "https://trace-moe-image-proxy.now.sh/api/image-proxy?url=".str_replace(' ','%20',rawurlencode($imageURL));
             $curl = curl_init();
             curl_setopt($curl, CURLOPT_URL, $proxyImageURL);
             curl_setopt($curl, CURLOPT_VERBOSE, 1);
@@ -131,7 +131,23 @@ if (!$image && !$_GET['url'] && !isset($_FILES['image'])) {
             curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, 0); // <-- don't forget this
             curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, 0); // <-- and this
             $raw = curl_exec($curl);
-            file_put_contents("../thumbnail/".$filename, $raw);
+            $contentType = curl_getinfo($curl, CURLINFO_CONTENT_TYPE);
+            if (explode("/", $contentType)[0] === "video") {
+                file_put_contents("../clip/".$filename.".video", $raw);
+                $ffmpeg = FFMpeg\FFMpeg::create([
+                    'ffmpeg.binaries' => '/usr/bin/avconv',
+                    'ffmpeg.binaries' => '/usr/bin/ffmpeg',
+                    'ffprobe.binaries' => '/usr/bin/avprobe',
+                    'ffprobe.binaries' => '/usr/bin/ffprobe'
+                 ]);
+                 $video = $ffmpeg->open("../clip/".$filename.".video");
+                 $video
+                   ->frame(FFMpeg\Coordinate\TimeCode::fromSeconds(0))
+                   ->save("../thumbnail/".$filename);
+                unlink("../clip/".$filename.".video");
+            } else {
+                file_put_contents("../thumbnail/".$filename, $raw);
+            }
         } catch(Exception $e) {
             header('HTTP/1.1 400 Bad Request');
             exit('"Failed to fetch image '.$imageURL.'"');
@@ -164,6 +180,8 @@ if (!$image && !$_GET['url'] && !isset($_FILES['image'])) {
     $final_result->docs = [];
     
     $filter_str = $filter ? "fq=id:".intval($filter)."/*" : "";
+    $method = isset($_GET['method']) && $_GET['method'] === 'jc' ? 'jc' : 'cl';
+    $prefix = isset($_GET['method']) && $_GET['method'] === 'jc' ? 'lire' : 'lire_cl';
     $trial = 0;
     while($trial < 3){
         $trial++;
@@ -171,7 +189,7 @@ if (!$image && !$_GET['url'] && !isset($_FILES['image'])) {
 
         unset($nodes);
         for($i = 0; $i <= 31; $i++){
-            $nodes[]= "http://192.168.2.12:8983/solr/lire_{$i}/lireq?{$filter_str}&field=cl_ha&ms=false&accuracy={$trial}&candidates=1000000&rows=10";
+            $nodes[]= "http://127.0.0.1:8988/solr/{$prefix}_{$i}/lireq?{$filter_str}&field=${method}_ha&ms=false&accuracy={$trial}&candidates=800000&rows=10";
         }
 
         $node_count = count($nodes);
@@ -214,8 +232,9 @@ if (!$image && !$_GET['url'] && !isset($_FILES['image'])) {
               usort($final_result->docs, "reRank");
             }
         }
+        $threshold = isset($_GET['method']) && $_GET['method'] === 'jc' ? 3 : 8; // target 97% for JCD, 92% for ColorLayout
         foreach($final_result->docs as $doc){
-          if($doc->d <= 10) break 2; //break outer loop
+          if($doc->d <= $threshold) break 2; //break outer loop
         }
     }
     usort($final_result->docs, "reRank");
@@ -306,55 +325,27 @@ if (!$image && !$_GET['url'] && !isset($_FILES['image'])) {
         $sql2 = mysqli_connect($sql_anime_hostname, $sql_anime_username, $sql_anime_password, $sql_anime_database);
         if (!mysqli_connect_errno()) {
             mysqli_query($sql2, "SET NAMES 'utf8'");
-            if ($stmt = mysqli_prepare($sql2, "SELECT `season`,`title` FROM `anime` WHERE `anilist_id`=? LIMIT 0,1")){
+            if ($stmt = mysqli_prepare($sql2, "SELECT `season`,`title`,`json` FROM `anime_view` WHERE `anilist_id`=? LIMIT 0,1")){
                 mysqli_stmt_bind_param($stmt, "i", $anilist_id);
                 mysqli_stmt_execute($stmt);
                 mysqli_stmt_store_result($stmt);
-                mysqli_stmt_bind_result($stmt, $season, $title);
+                mysqli_stmt_bind_result($stmt, $season, $title, $json);
                 mysqli_stmt_fetch($stmt);
-
                 if(mysqli_stmt_num_rows($stmt) > 0) {
-
                     $doc->season = $season;
                     $doc->anime = $title;
                     $doc->title = $title;
-
-                    // use anilist ID to get titles of different languages
-                    $request = array(
-                    "size" => 1,
-                    "_source" => array("idMal", "title", "synonyms", "synonyms_chinese", "isAdult"),
-                    "query" => array(
-                        "ids" => array(
-                            "values" => array(intval($anilist_id))
-                        )
-                    )
-                    );
-                    $payload = json_encode($request);
-                    $curl = curl_init();
-                    curl_setopt($curl, CURLOPT_URL, "http://127.0.0.1:9200/anilist/anime/_search");
-                    curl_setopt($curl, CURLOPT_POSTFIELDS, $payload);
-                    curl_setopt($curl, CURLOPT_HTTPHEADER, array('Content-Type:application/json'));
-                    curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
-                    try{
-                        $res = curl_exec($curl);
-                        $result = json_decode($res);
-                        if($result->hits && $result->hits->total > 0){
-                            $doc->mal_id = intval($result->hits->hits[0]->_source->idMal);
-                            $doc->title_romaji = $result->hits->hits[0]->_source->title->romaji ?? "";
-                            $doc->title_native = $result->hits->hits[0]->_source->title->native ?? $doc->title_romaji;
-                            $doc->title_english = $result->hits->hits[0]->_source->title->english ?? $doc->title_romaji;
-                            $doc->title_chinese = $result->hits->hits[0]->_source->title->chinese ?? $doc->title_romaji;
-                            $doc->title = $doc->title_native;
-                            $doc->synonyms = $result->hits->hits[0]->_source->synonyms;
-                            $doc->synonyms_chinese = $result->hits->hits[0]->_source->synonyms_chinese;
-                            $doc->is_adult = $result->hits->hits[0]->_source->isAdult;
-                        }
-                    }
-                    catch(Exception $e){
-
-                    }
-                    finally{
-                        curl_close($curl);
+                    $result = json_decode($json);
+                    if($result){
+                        $doc->mal_id = intval($result->idMal);
+                        $doc->title_romaji = $result->title->romaji ?? "";
+                        $doc->title_native = $result->title->native ?? $doc->title_romaji;
+                        $doc->title_english = $result->title->english ?? $doc->title_romaji;
+                        $doc->title_chinese = $result->title->chinese ?? $doc->title_romaji;
+                        $doc->title = $doc->title_native;
+                        $doc->synonyms = $result->synonyms;
+                        $doc->synonyms_chinese = $result->synonyms_chinese;
+                        $doc->is_adult = $result->isAdult;
                     }
                 }
                 mysqli_stmt_close($stmt);
